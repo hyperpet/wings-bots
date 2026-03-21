@@ -102,12 +102,31 @@ def run_x_bot():
             time.sleep(sleep_secs)
             continue
 
-        # Decide how many posts today (3-7)
-        posts_today = random.randint(3, 7)
-        logger.info(f"[X] Planning {posts_today} posts today")
+        # Calculate how many minutes are left in today's posting window (6am-1am EST)
+        now_est = datetime.now(EST)
+        current_minute = now_est.hour * 60 + now_est.minute
+        end_minute = 25 * 60  # 1am = minute 1500
+        minutes_remaining = max(0, end_minute - current_minute)
 
-        # Generate random posting times spread across 6am-1am EST (19 hours)
-        available_minutes = list(range(6 * 60, 25 * 60))  # 6am to 1am = 360 to 1500 min
+        # Need at least 90 minutes to fit even 1 post with spacing
+        if minutes_remaining < 90:
+            logger.info(f"[X] Less than 90 min left in posting window. Skipping to tomorrow.")
+            now_est = datetime.now(EST)
+            next_day_6am = (now_est + timedelta(days=1)).replace(hour=6, minute=random.randint(0, 30), second=0)
+            sleep_secs = (next_day_6am - now_est).total_seconds()
+            logger.info(f"[X] Sleeping until tomorrow {next_day_6am.strftime('%H:%M EST')}")
+            time.sleep(max(60, sleep_secs))
+            continue
+
+        # Max posts that fit comfortably: 1 post per 90 min of remaining window
+        max_posts_by_time = max(1, minutes_remaining // 90)
+        posts_today = random.randint(min(3, max_posts_by_time), min(7, max_posts_by_time))
+        logger.info(f"[X] Planning {posts_today} posts today ({minutes_remaining} min remaining in window)")
+
+        # Generate random posting times only within the remaining window
+        available_minutes = list(range(current_minute + 30, end_minute))  # start 30 min from now
+        if len(available_minutes) < posts_today:
+            posts_today = max(1, len(available_minutes) // 60)
         post_minutes = sorted(random.sample(available_minutes, min(posts_today, len(available_minutes))))
 
         for post_minute in post_minutes:
