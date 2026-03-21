@@ -14,7 +14,6 @@ import os
 import json
 import random
 import requests
-import subprocess
 import logging
 import time
 import xml.etree.ElementTree as ET
@@ -505,52 +504,14 @@ def save_post_time(msg_type: str):
         json.dump(data, f)
 
 
-# ─── Schedule Next Post ───────────────────────────────────────────────────────
-def schedule_next_post():
-    """
-    Self-schedule the next post with human-like randomness.
-    - 15% chance: silent period (36-48h)
-    - 85% chance: next post in 12-24h
-    """
-    roll = random.random()
-    if roll < 0.15:
-        hours = random.uniform(36, 48)
-        reason = "silent period"
-    else:
-        hours = random.uniform(12, 24)
-        reason = "next post"
-
-    next_time = datetime.utcnow() + timedelta(hours=hours)
-    cron_expr = f"{next_time.minute} {next_time.hour} {next_time.day} {next_time.month} *"
-    cron_line = f"{cron_expr} python3 {SCRIPT_PATH} >> /home/ubuntu/wings/cron_output.log 2>&1"
-
-    logger.info(f"Scheduling {reason} at {next_time.strftime('%Y-%m-%d %H:%M')} UTC ({hours:.1f}h from now)")
-
-    try:
-        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-        current = result.stdout if result.returncode == 0 else ""
-        lines = [l for l in current.splitlines() if "post_to_channel.py" not in l]
-        lines.append(cron_line)
-        new_cron = "\n".join(lines) + "\n"
-        proc = subprocess.run(["crontab", "-"], input=new_cron, text=True, capture_output=True)
-        if proc.returncode == 0:
-            logger.info(f"Cron updated: {cron_line}")
-        else:
-            logger.error(f"Cron update failed: {proc.stderr}")
-    except Exception as e:
-        logger.error(f"Cron scheduling error: {e}")
+# Scheduling is handled by main.py — no cron needed here
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     logger.info(f"=== Post triggered at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC ===")
 
-    # 1. Check minimum interval
-    if not check_min_interval():
-        schedule_next_post()
-        return
-
-    # 2. Fetch news
+    # 1. Fetch news
     news = fetch_crypto_news()
     logger.info(f"News fetched: {news[:150]}...")
 
@@ -582,8 +543,7 @@ def main():
         if success:
             save_post_time("vulnerability")
 
-    # 4. Schedule next post
-    schedule_next_post()
+    # Scheduling is handled by main.py
 
 
 if __name__ == "__main__":
