@@ -2,24 +2,22 @@
 """
 Wings — X (Twitter) Auto-Poster
 Follows strictly: Instrucciones_Bot_Crypto_Twitter_FINAL.md
-3-7 posts per day, irregular schedule, CT veteran persona
+Scheduling is handled by main.py — this script just posts one tweet when called.
 """
 
-import os, json, random, logging, subprocess
-from datetime import datetime, timedelta
-import pytz
-import tweepy
+import os
+import json
+import random
+import logging
 import requests
 import xml.etree.ElementTree as ET
+from datetime import datetime
+import pytz
+import tweepy
 from openai import OpenAI
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    filename=os.environ.get("DATA_DIR", "/app/data") + "/x_post_log.txt",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+logger = logging.getLogger("wings.x")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 API_KEY             = os.environ.get("X_API_KEY", "tMkqzeKXyiqThV8relqr4Xa1h")
@@ -27,15 +25,15 @@ API_KEY_SECRET      = os.environ.get("X_API_KEY_SECRET", "Wchkdy8E2unkyzHNautGHb
 ACCESS_TOKEN        = os.environ.get("X_ACCESS_TOKEN", "2033548838124851200-LPpTaWOvxII1qjcVFi8EHQcNluZlSq")
 ACCESS_TOKEN_SECRET = os.environ.get("X_ACCESS_TOKEN_SECRET", "t6p4XvsiLP6k9ZCEHlSBac0LsNeVDxPSC4b2vMS91uzT2")
 
-BOT_TOKEN           = os.environ.get("TELEGRAM_BOT_TOKEN", "8203101684:AAE_RAR7CBhFy-N1CkVha1fF3vwfMf6nE8U")
-TELEGRAM_CHANNEL    = "@wingsscalls"
+BOT_TOKEN        = os.environ.get("TELEGRAM_BOT_TOKEN", "8203101684:AAE_RAR7CBhFy-N1CkVha1fF3vwfMf6nE8U")
+TELEGRAM_CHANNEL = "@wingsscalls"
 
-STATE_FILE          = os.environ.get("DATA_DIR", "/app/data") + "/x_state.json"
-LAST_POST_FILE      = os.environ.get("DATA_DIR", "/app/data") + "/x_last_post.txt"
+DATA_DIR   = os.environ.get("DATA_DIR", "/app/data")
+STATE_FILE = os.path.join(DATA_DIR, "x_state.json")
 
 EST = pytz.timezone("America/New_York")
 
-# ─── Narrative State ──────────────────────────────────────────────────────────
+# ─── State (narrative continuity) ─────────────────────────────────────────────
 DEFAULT_STATE = {
     "ecosystem": "Solana",
     "conviction_tokens": ["$SOL", "$BRETT"],
@@ -45,54 +43,23 @@ DEFAULT_STATE = {
     "biggest_win": "held $SOL through the bear and multiplied capital significantly",
     "recent_tweets": [],
     "declared_positions": ["accumulating $SOL", "watching $BRETT"],
-    "posts_today": 0,
-    "posts_target_today": 0,
-    "day_reset": ""
+    "crosspost_counter": 0,
 }
 
 def load_state():
+    os.makedirs(DATA_DIR, exist_ok=True)
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            pass
     return DEFAULT_STATE.copy()
 
 def save_state(state):
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
-
-# ─── Time Guard ───────────────────────────────────────────────────────────────
-MIN_HOURS_BETWEEN_POSTS = 1.5  # minimum 1.5h between individual tweets
-
-def get_last_post_time():
-    if os.path.exists(LAST_POST_FILE):
-        with open(LAST_POST_FILE) as f:
-            ts = f.read().strip()
-            if ts:
-                return datetime.fromisoformat(ts)
-    return None
-
-def set_last_post_time():
-    with open(LAST_POST_FILE, "w") as f:
-        f.write(datetime.utcnow().isoformat())
-
-def hours_since_last_post():
-    last = get_last_post_time()
-    if last is None:
-        return 999
-    return (datetime.utcnow() - last).total_seconds() / 3600
-
-# ─── Daily Post Counter ───────────────────────────────────────────────────────
-def get_today_str():
-    return datetime.now(EST).strftime("%Y-%m-%d")
-
-def reset_daily_if_needed(state):
-    today = get_today_str()
-    if state.get("day_reset") != today:
-        state["posts_today"] = 0
-        state["posts_target_today"] = random.randint(3, 7)
-        state["day_reset"] = today
-        logging.info(f"New day: target {state['posts_target_today']} posts today")
-    return state
 
 # ─── News Fetcher ─────────────────────────────────────────────────────────────
 def fetch_crypto_news():
@@ -110,10 +77,10 @@ def fetch_crypto_news():
                 if title:
                     headlines.append(title)
             if headlines:
-                logging.info(f"News from {url}")
+                logger.info(f"News fetched from {url}")
                 break
         except Exception as e:
-            logging.warning(f"News fetch failed ({url}): {e}")
+            logger.warning(f"News fetch failed ({url}): {e}")
     if not headlines:
         headlines = [
             "Bitcoin trading near key resistance levels",
@@ -159,7 +126,6 @@ TWEET_TYPES = [
     "news_reaction",
     "late_night_reflection",
 ]
-
 TWEET_TYPE_WEIGHTS = [0.22, 0.18, 0.18, 0.12, 0.12, 0.10, 0.08]
 
 def generate_tweet(news_headlines, state, tweet_type=None):
@@ -197,7 +163,6 @@ def generate_tweet(news_headlines, state, tweet_type=None):
     }
 
     user_prompt = f"""current time context: {time_context}
-
 recent news headlines:
 {news_str}
 
@@ -222,7 +187,6 @@ output ONLY the tweet text, nothing else. no quotes, no labels, no explanations.
     )
 
     tweet = response.choices[0].message.content.strip()
-    # Remove surrounding quotes if present
     if tweet.startswith('"') and tweet.endswith('"'):
         tweet = tweet[1:-1]
     return tweet, tweet_type
@@ -242,7 +206,6 @@ def post_tweet(text):
 
 # ─── Cross-post to Telegram ───────────────────────────────────────────────────
 def should_crosspost(state):
-    """Cross-post every ~2 X posts to Telegram"""
     count = state.get("crosspost_counter", 0) + 1
     state["crosspost_counter"] = count
     return count % 2 == 0
@@ -255,139 +218,40 @@ def crosspost_to_telegram(tweet_text, tweet_url):
         f"like, comment & repost if u fw it"
     )
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHANNEL, "text": msg}, timeout=10)
-    logging.info(f"Cross-posted to Telegram: {tweet_url}")
+    try:
+        requests.post(url, json={"chat_id": TELEGRAM_CHANNEL, "text": msg}, timeout=10)
+        logger.info(f"Cross-posted to Telegram: {tweet_url}")
+    except Exception as e:
+        logger.warning(f"Cross-post to Telegram failed: {e}")
 
-# ─── Schedule Next Post ───────────────────────────────────────────────────────
-# ─── American/Western Hours Definition ───────────────────────────────────────
-# Posts only during: 6:00 AM - 1:00 AM EST (next day)
-# This covers: US East, US West, UK evening, Western Europe evening
-# Avoids: Asian morning hours (2am-6am EST = 3pm-7pm Asia)
-POST_START_HOUR_EST = 6    # 6:00 AM EST
-POST_END_HOUR_EST   = 25   # 1:00 AM EST next day (hour 25 = 1am)
-
-def schedule_next(state):
-    """
-    Schedule next post based on how many posts remain for today.
-    Uses irregular intervals to simulate human behavior.
-    Posts are ONLY distributed during American/Western hours (6am - 1am EST).
-    """
-    posts_done = state.get("posts_today", 0)
-    posts_target = state.get("posts_target_today", 4)
-    posts_remaining = posts_target - posts_done
-
-    now_est = datetime.now(EST)
-    now_utc = datetime.utcnow()
-    current_hour_decimal = now_est.hour + now_est.minute / 60
-
-    if posts_remaining <= 0:
-        # Done for today — schedule first post of tomorrow at a random time 6am-10am EST
-        tomorrow_est = now_est.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        rand_hour = random.randint(POST_START_HOUR_EST, 10)
-        rand_min = random.randint(0, 59)
-        next_est = tomorrow_est.replace(hour=rand_hour, minute=rand_min)
-        # Reset daily counter for tomorrow
-        state["posts_today"] = 0
-        state["posts_target_today"] = random.randint(3, 7)
-        state["day_reset"] = (now_est + timedelta(days=1)).strftime("%Y-%m-%d")
-        interval_hours = (next_est - now_est).total_seconds() / 3600
-        logging.info(f"Done for today ({posts_done} posts). Next post tomorrow at {next_est.strftime('%H:%M')} EST")
-    else:
-        # If we're outside posting hours, wait until 6am EST
-        if current_hour_decimal < POST_START_HOUR_EST:
-            # It's before 6am EST — wait until 6am + random minutes
-            next_est = now_est.replace(hour=POST_START_HOUR_EST, minute=random.randint(0, 45), second=0)
-            interval_hours = (next_est - now_est).total_seconds() / 3600
-            logging.info(f"Outside posting hours. Waiting until {next_est.strftime('%H:%M')} EST")
-        elif current_hour_decimal >= POST_END_HOUR_EST - 24:  # after 1am
-            # After 1am — schedule for tomorrow morning
-            tomorrow_est = now_est.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            next_est = tomorrow_est.replace(hour=POST_START_HOUR_EST, minute=random.randint(0, 45))
-            interval_hours = (next_est - now_est).total_seconds() / 3600
-            logging.info(f"Past 1am EST. Scheduling for tomorrow at {next_est.strftime('%H:%M')} EST")
-        else:
-            # Within posting hours — spread remaining posts across the rest of the day
-            # Remaining hours until 1am EST
-            hours_left = max(POST_END_HOUR_EST - current_hour_decimal, 1.5)
-            base_interval = hours_left / max(posts_remaining, 1)
-            # Add randomness: ±40% variation
-            variation = base_interval * 0.4
-            interval_hours = base_interval + random.uniform(-variation, variation)
-            interval_hours = max(1.5, min(interval_hours, 8))  # between 1.5h and 8h
-            next_est = now_est + timedelta(hours=interval_hours)
-            logging.info(f"Next post in {interval_hours:.1f}h at {next_est.strftime('%H:%M')} EST ({posts_remaining-1} more after that today)")
-
-    # Convert to UTC for cron
-    next_utc = now_utc + timedelta(hours=interval_hours)
-    
-    cron_min = next_utc.minute
-    cron_hour = next_utc.hour
-    cron_day = next_utc.day
-    cron_month = next_utc.month
-
-    cron_line = f"{cron_min} {cron_hour} {cron_day} {cron_month} * python3 /home/ubuntu/wings/post_to_x.py >> /home/ubuntu/wings/x_cron_output.log 2>&1"
-
-    # Update crontab
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-    existing = result.stdout if result.returncode == 0 else ""
-    lines = [l for l in existing.splitlines() if "post_to_x.py" not in l]
-    lines.append(cron_line)
-    new_crontab = "\n".join(lines) + "\n"
-    subprocess.run(["crontab", "-"], input=new_crontab, text=True)
-    logging.info(f"Cron updated: {cron_line}")
-
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# ─── Main (called by main.py scheduler) ───────────────────────────────────────
 def main():
-    # Time guard
-    hours_since = hours_since_last_post()
-    if hours_since < MIN_HOURS_BETWEEN_POSTS:
-        logging.info(f"Too soon to post. Only {hours_since:.1f}h since last post (min {MIN_HOURS_BETWEEN_POSTS}h). Skipping.")
-        return
+    logger.info(f"=== X Post triggered at {datetime.now(EST).strftime('%Y-%m-%d %H:%M EST')} ===")
 
     state = load_state()
-    state = reset_daily_if_needed(state)
-
-    posts_done = state.get("posts_today", 0)
-    posts_target = state.get("posts_target_today", 4)
-
-    if posts_done >= posts_target:
-        logging.info(f"Already posted {posts_done}/{posts_target} times today. Done.")
-        schedule_next(state)
-        save_state(state)
-        return
 
     # Fetch news
     news = fetch_crypto_news()
 
     # Generate tweet
     tweet_text, tweet_type = generate_tweet(news, state)
-    logging.info(f"Generated [{tweet_type}]: {tweet_text}")
+    logger.info(f"Generated [{tweet_type}]: {tweet_text[:100]}...")
 
     # Post to X
-    try:
-        tweet_id, tweet_url = post_tweet(tweet_text)
-        logging.info(f"Tweet posted. ID: {tweet_id} | URL: {tweet_url}")
+    tweet_id, tweet_url = post_tweet(tweet_text)
+    logger.info(f"Tweet posted: {tweet_url}")
 
-        # Update state
-        state["posts_today"] = posts_done + 1
-        recent = state.get("recent_tweets", [])
-        recent.append(tweet_text)
-        state["recent_tweets"] = recent[-10:]  # keep last 10
-        set_last_post_time()
+    # Update state
+    recent = state.get("recent_tweets", [])
+    recent.append(tweet_text)
+    state["recent_tweets"] = recent[-10:]
 
-        # Cross-post to Telegram every ~2 X posts
-        if should_crosspost(state):
-            try:
-                crosspost_to_telegram(tweet_text, tweet_url)
-            except Exception as e:
-                logging.warning(f"Cross-post to Telegram failed: {e}")
+    # Cross-post to Telegram every ~2 posts
+    if should_crosspost(state):
+        crosspost_to_telegram(tweet_text, tweet_url)
 
-    except Exception as e:
-        logging.error(f"Failed to post tweet: {e}")
-
-    # Schedule next post
-    schedule_next(state)
     save_state(state)
+    return tweet_url
 
 if __name__ == "__main__":
     main()

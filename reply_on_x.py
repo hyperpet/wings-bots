@@ -6,15 +6,17 @@ Finds recent posts from big CT accounts and replies authentically
 Runs every 45-90 minutes during American/Western hours (6am-1am EST)
 """
 
-import os, json, random, logging, subprocess
+import os, json, random, logging
 from datetime import datetime, timedelta
 import pytz
 import tweepy
 from openai import OpenAI
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
+_data_dir = os.environ.get("DATA_DIR", "/app/data")
+os.makedirs(_data_dir, exist_ok=True)
 logging.basicConfig(
-    filename=os.environ.get("DATA_DIR", "/app/data") + "/x_reply_log.txt",
+    filename=_data_dir + "/x_reply_log.txt",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
@@ -288,44 +290,11 @@ def post_reply(client, reply_text, tweet_id):
     )
     return response.data["id"]
 
-# ─── Schedule Next Run ────────────────────────────────────────────────────────
-def schedule_next_run():
-    """Schedule next reply run in 45-90 minutes, only during posting hours."""
-    now_utc = datetime.utcnow()
-    now_est = datetime.now(EST)
-    
-    # Random interval between 45 and 90 minutes
-    interval_minutes = random.randint(45, 90)
-    next_utc = now_utc + timedelta(minutes=interval_minutes)
-    next_est = now_est + timedelta(minutes=interval_minutes)
-    
-    # If next run would be outside posting hours, schedule for next morning
-    next_hour = next_est.hour + next_est.minute / 60
-    if next_hour < POST_START_HOUR_EST or (next_hour >= 1.0 and next_hour < POST_START_HOUR_EST):
-        # Schedule for 6am EST tomorrow
-        tomorrow = now_est.replace(hour=0, minute=0, second=0) + timedelta(days=1)
-        next_est = tomorrow.replace(hour=POST_START_HOUR_EST, minute=random.randint(10, 45))
-        next_utc = next_est.astimezone(pytz.utc).replace(tzinfo=None)
-        logging.info(f"Outside hours. Next reply run tomorrow at {next_est.strftime('%H:%M')} EST")
-    else:
-        logging.info(f"Next reply run in {interval_minutes}min at {next_est.strftime('%H:%M')} EST")
-    
-    cron_line = f"{next_utc.minute} {next_utc.hour} {next_utc.day} {next_utc.month} * python3 /home/ubuntu/wings/reply_on_x.py >> /home/ubuntu/wings/x_reply_cron.log 2>&1"
-    
-    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-    existing = result.stdout if result.returncode == 0 else ""
-    lines = [l for l in existing.splitlines() if "reply_on_x.py" not in l]
-    lines.append(cron_line)
-    new_crontab = "\n".join(lines) + "\n"
-    subprocess.run(["crontab", "-"], input=new_crontab, text=True)
-    logging.info(f"Reply cron updated: {cron_line}")
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     # Check posting hours
     if not is_posting_hours():
         logging.info("Outside American/Western posting hours. Skipping reply run.")
-        schedule_next_run()
         return
     
     # Load state
@@ -344,7 +313,6 @@ def main():
     
     if replies_today >= daily_target:
         logging.info(f"Already made {replies_today} replies today (target: {daily_target}). Skipping.")
-        schedule_next_run()
         save_reply_state(reply_state)
         return
     
@@ -358,7 +326,6 @@ def main():
     
     if not candidates:
         logging.info("No suitable tweets found to reply to this run.")
-        schedule_next_run()
         return
     
     logging.info(f"Found {len(candidates)} candidate tweets to reply to.")
@@ -395,7 +362,6 @@ def main():
     
     save_replied_ids(replied_ids)
     save_reply_state(reply_state)
-    schedule_next_run()
 
 if __name__ == "__main__":
     main()
