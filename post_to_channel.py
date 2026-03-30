@@ -23,23 +23,31 @@ from openai import OpenAI
 # ─── Configuration ────────────────────────────────────────────────────────────
 BOT_TOKEN          = os.environ.get("TELEGRAM_BOT_TOKEN", "8203101684:AAE_RAR7CBhFy-N1CkVha1fF3vwfMf6nE8U")
 CHANNEL_ID         = "@wingsscalls"
-LOG_FILE           = os.environ.get("DATA_DIR", "/app/data") + "/post_log.txt"
+_DATA_DIR_RAW      = os.environ.get("DATA_DIR", "/tmp/wings_data")
+# Ensure DATA_DIR exists before using it
+os.makedirs(_DATA_DIR_RAW, exist_ok=True)
+LOG_FILE           = _DATA_DIR_RAW + "/post_log.txt"
 SCRIPT_PATH        = os.path.abspath(__file__)
-LAST_POST_FILE     = os.environ.get("DATA_DIR", "/app/data") + "/last_post_time.txt"
-ACTIVE_CALL_FILE   = os.environ.get("DATA_DIR", "/app/data") + "/active_call.json"
+LAST_POST_FILE     = _DATA_DIR_RAW + "/last_post_time.txt"
+ACTIVE_CALL_FILE   = _DATA_DIR_RAW + "/active_call.json"
 MIN_HOURS          = 12
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
-    filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
-# ─── OpenAI ───────────────────────────────────────────────────────────────────
-client = OpenAI()
+# ─── OpenAI ──────────────────────────────────────────────────────────────────
+# Client initialized lazily inside _call_gpt to avoid import-time failures
+_openai_client = None
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = OpenAI()
+    return _openai_client
 
 # ─── System Prompt Base ───────────────────────────────────────────────────────
 SYSTEM_PROMPT = """eres el admin de un canal de telegram crypto muy respetado llamado Wings Calls.
@@ -354,7 +362,7 @@ def generate_crisis_message(ticker: str, reason: str = "rugged") -> str:
 def _call_gpt(prompt: str, max_tokens: int = 150) -> str:
     """Call OpenAI GPT with the system prompt and return the response."""
     try:
-        response = client.chat.completions.create(
+        response = _get_openai_client().chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
